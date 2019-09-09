@@ -16,6 +16,7 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import warnings
 warnings.filterwarnings("ignore")
 
+# AWD_LSTM improvements - can handle different sequence length
 class AWD_LSTM1(nn.Module):
     "AWD-LSTM inspired by https://arxiv.org/abs/1708.02182."
     initrange=0.1
@@ -63,67 +64,6 @@ class AWD_LSTM1(nn.Module):
     def reset(self):
         "Reset the hidden states."
         self.hidden = [(self._one_hidden(l), self._one_hidden(l)) for l in range(self.n_layers)]
-
-class AWD_LSTM(Module):
-    "AWD-LSTM/QRNN inspired by https://arxiv.org/abs/1708.02182."
-
-    initrange=0.1
-
-    def __init__(self, vocab_sz:int, emb_sz:int, n_hid:int, n_layers:int, pad_token:int=1, hidden_p:float=0.2,
-                 input_p:float=0.6, embed_p:float=0.1, weight_p:float=0.5, qrnn:bool=False, bidir:bool=False):
-        self.bs,self.qrnn,self.emb_sz,self.n_hid,self.n_layers = 1,qrnn,emb_sz,n_hid,n_layers
-        self.n_dir = 2 if bidir else 1
-        self.encoder = nn.Embedding(vocab_sz, emb_sz, padding_idx=pad_token)
-        self.encoder_dp = EmbeddingDropout(self.encoder, embed_p)
-        if self.qrnn:
-            #Using QRNN requires an installation of cuda
-            from .qrnn import QRNN
-            self.rnns = [QRNN(emb_sz if l == 0 else n_hid, (n_hid if l != n_layers - 1 else emb_sz)//self.n_dir, 1,
-                              save_prev_x=True, zoneout=0, window=2 if l == 0 else 1, output_gate=True, bidirectional=bidir)
-                         for l in range(n_layers)]
-            for rnn in self.rnns:
-                rnn.layers[0].linear = WeightDropout(rnn.layers[0].linear, weight_p, layer_names=['weight'])
-        else:
-            self.rnns = [nn.LSTM(emb_sz if l == 0 else n_hid, (n_hid if l != n_layers - 1 else emb_sz)//self.n_dir, 1,
-                                 batch_first=True, bidirectional=bidir) for l in range(n_layers)]
-            self.rnns = [WeightDropout(rnn, weight_p) for rnn in self.rnns]
-        self.rnns = nn.ModuleList(self.rnns)
-        self.encoder.weight.data.uniform_(-self.initrange, self.initrange)
-        self.input_dp = RNNDropout(input_p)
-        self.hidden_dps = nn.ModuleList([RNNDropout(hidden_p) for l in range(n_layers)])
-
-    def forward(self, input:Tensor, from_embeddings:bool=False)->Tuple[Tensor,Tensor]:
-        if from_embeddings: bs,sl,es = input.size()
-        else: bs,sl = input.size()
-        if bs!=self.bs:
-            self.bs=bs
-            self.reset()
-        raw_output = self.input_dp(input if from_embeddings else self.encoder_dp(input))
-        new_hidden,raw_outputs,outputs = [],[],[]
-        for l, (rnn,hid_dp) in enumerate(zip(self.rnns, self.hidden_dps)):
-            raw_output, new_h = rnn(raw_output, self.hidden[l])
-            new_hidden.append(new_h)
-            raw_outputs.append(raw_output)
-            if l != self.n_layers - 1: raw_output = hid_dp(raw_output)
-            outputs.append(raw_output)
-        self.hidden = to_detach(new_hidden, cpu=False)
-        return raw_outputs, outputs
-
-    def _one_hidden(self, l:int)->Tensor:
-        "Return one hidden state."
-        nh = (self.n_hid if l != self.n_layers - 1 else self.emb_sz) // self.n_dir
-        return one_param(self).new(self.n_dir, self.bs, nh).zero_()
-
-    def select_hidden(self, idxs):
-        if self.qrnn: self.hidden = [h[:,idxs,:] for h in self.hidden]
-        else: self.hidden = [(h[0][:,idxs,:],h[1][:,idxs,:]) for h in self.hidden]
-        self.bs = len(idxs)
-
-    def reset(self):
-        "Reset the hidden states."
-        [r.reset() for r in self.rnns if hasattr(r, 'reset')]
-        if self.qrnn: self.hidden = [self._one_hidden(l) for l in range(self.n_layers)]
-        else: self.hidden = [(self._one_hidden(l), self._one_hidden(l)) for l in range(self.n_layers)]
 class Attention(nn.Module):
     def __init__(self, embed_dim, hidden_dim=None, out_dim=None, n_head=1, score_function='dot_product', dropout=0):
         ''' Attention Mechanism
@@ -220,20 +160,8 @@ class NoQueryAttention(Attention):
         q = self.q.expand(mb_size, -1, -1)
         return super(NoQueryAttention, self).forward(k, q)
 
-__all__ = ['RNNLearner', 'LanguageLearner', 'convert_weights', 'decode_spec_tokens', 'get_language_model', 'language_model_learner',
-           'MultiBatchEncoder', 'get_text_classifier', 'text_classifier_learner', 'PoolingLinearClassifier']
 
-_model_meta = {AWD_LSTM: {'hid_name':'emb_sz', 'url':URLs.WT103_FWD, 'url_bwd':URLs.WT103_BWD,
-                          'config_lm':awd_lstm_lm_config, 'split_lm': awd_lstm_lm_split,
-                          'config_clas':awd_lstm_clas_config, 'split_clas': awd_lstm_clas_split},
-               Transformer: {'hid_name':'d_model', 'url':URLs.OPENAI_TRANSFORMER,
-                             'config_lm':tfmer_lm_config, 'split_lm': tfmer_lm_split,
-                             'config_clas':tfmer_clas_config, 'split_clas': tfmer_clas_split},
-               TransformerXL: {'hid_name':'d_model',
-                              'config_lm':tfmerXL_lm_config, 'split_lm': tfmerXL_lm_split,
-                              'config_clas':tfmerXL_clas_config, 'split_clas': tfmerXL_clas_split}}
-
-# open a file
+# open text file
 def load_text_data(file):
     fin = open(file, 'r', encoding='utf-8', newline='\n', errors='ignore')
     lines = fin.readlines()
@@ -286,33 +214,7 @@ embedding_weights = layers[0].encoder.weight
 embedding_dict = data_lm.vocab.stoi
 # save encoder
 learn.save_encoder('fine_tuned_enc')
-#
-# # create classification databunch
-# bs = 64
-# data_clas = (TextList.from_df(df, cols='text',vocab=data_lm.vocab)
-#              .split_from_df()
-#              .label_from_df(cols='target')
-#              .databunch(bs=bs))
-# data_clas.save('data_clas.pkl')
-#
-# # load pre-trained sentiment model
-# learn = text_classifier_learner(data_clas, AWD_LSTM, drop_mult=0.5)
-# learn.load_encoder('fine_tuned_enc')
-#
-# # model components
-# encoder = learn.model
-# encoder =  awd_lstm[0]
-# decoder = awd_lstm[1]
 
-
-# myLinear = nn.Linear(in_features=4104, out_features=512, bias=True)
-# head = nn.Sequential(*list(head.children())[:3], End(), nn.Dropout(.25), myLinear, *list(head.children())[5:])
-# model = nn.Sequential(encoder,decoder).cuda()
-# learn.model = model
-
-# Load classification data
-
-# convert into torch tensor
 
 ## prepare data:
 # Input => [text, aspect] ; Output => label
@@ -353,124 +255,41 @@ val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = bs, shuffle=T
 # convert to fastai DataBunch
 databunch = DataBunch(train_dl = train_loader, valid_dl = val_loader)
 
-# define model structure
-
-# input databunch, model, loss function, metrics
-
-# arch = AWD_LSTM
-# meta = _model_meta[arch]
-# config = meta['config_clas'].copy()
-# lin_ftrs = [50]
-# ps = [0.1]*len(lin_ftrs)
-# layers = [config[meta['hid_name']] * 3] + lin_ftrs + [n_class]
-# n_class = 3
-# layers = [config[meta['hid_name']] * 3] + lin_ftrs + [n_class]
-# init = config.pop('init') if 'init' in config else None
-# bptt:int=70
-# max_len:int=20*70
-# vocab_sz = len(data_lm.vocab.itos)
-# pad_idx: int = 1
-# init = config.pop('init') if 'init' in config else None
-
-
-# bs = 64
-# awd_lstm = AWD_LSTM(vocab_sz, **config)
-# encoder = MultiBatchEncoder(bptt, max_len, arch(vocab_sz, **config), pad_idx=pad_idx)
-# model = SequentialRNN(encoder, PoolingLinearClassifier(layers, ps))
-# learn = Learner(databunch, model, loss_func = nn.CrossEntropyLoss(), metrics=accuracy)
-# learn.unfreeze()
-# learn.fit_one_cycle(1, 2e-3, moms=(0.8,0.7))
 
 
 
+_model_meta = {AWD_LSTM: {'hid_name':'emb_sz', 'url':URLs.WT103_FWD, 'url_bwd':URLs.WT103_BWD,
+                          'config_lm':awd_lstm_lm_config, 'split_lm': awd_lstm_lm_split,
+                          'config_clas':awd_lstm_clas_config, 'split_clas': awd_lstm_clas_split},
+               Transformer: {'hid_name':'d_model', 'url':URLs.OPENAI_TRANSFORMER,
+                             'config_lm':tfmer_lm_config, 'split_lm': tfmer_lm_split,
+                             'config_clas':tfmer_clas_config, 'split_clas': tfmer_clas_split},
+               TransformerXL: {'hid_name':'d_model',
+                              'config_lm':tfmerXL_lm_config, 'split_lm': tfmerXL_lm_split,
+                              'config_clas':tfmerXL_clas_config, 'split_clas': tfmerXL_clas_split}}
 
-# PyTorch puts 0s everywhere we had padding in the output when unpacking.
-
-
-# Pooling for the classification model:
-# - the last hidden state
-# - the average of all the hidden states
-# - the maximum of all the hidden states
+meta = _model_meta[AWD_LSTM]
+config = meta['config_clas'].copy()
+bptt:int=70
+max_len = 70
+vocab_sz = embedding_weights.shape[0]
+drop_mult:float=1
+lin_ftrs = [50]
+ps = [0.1] * len(lin_ftrs)
+n_class = 3
+layers = [config[meta['hid_name']] * 3] + lin_ftrs + [n_class]
+ps = [config.pop('output_p')] + ps
+init = config.pop('init') if 'init' in config else None
+for k in config.keys():
+    if k.endswith('_p'): config[k] *= drop_mult
+bptt:int=70
+pad_idx = 1
 
 def pad_tensor(t, bs, val=0.):
     if t.size(0) < bs:
         return torch.cat([t, val + t.new_zeros(bs-t.size(0), *t.shape[1:])])
     return t
-
-class AWD_LSTM_clas_1(nn.Module):
-    "AWD-LSTM inspired by https://arxiv.org/abs/1708.02182."
-    initrange=0.1
-
-    def __init__(self, vocab_sz, emb_sz, n_hid, n_layers, pad_token,qrnn=False,bidir=False,
-                 hidden_p=0.2, input_p=0.6, embed_p=0.1, weight_p=0.5):
-        super().__init__()
-        self.bs,self.emb_sz,self.n_hid,self.n_layers,self.pad_token = 1,emb_sz,n_hid,n_layers,pad_token
-        self.emb = nn.Embedding(vocab_sz, emb_sz, padding_idx=pad_token)
-        self.emb_dp = EmbeddingDropout(self.emb, embed_p)
-        self.rnns = [nn.LSTM(emb_sz if l == 0 else n_hid, (n_hid if l != n_layers - 1 else emb_sz), 1,
-                             batch_first=True) for l in range(n_layers)]
-        self.rnns = nn.ModuleList([WeightDropout(rnn, weight_p) for rnn in self.rnns])
-        self.emb.weight.data.uniform_(-self.initrange, self.initrange)
-        self.input_dp = RNNDropout(input_p)
-        self.hidden_dps = nn.ModuleList([RNNDropout(hidden_p) for l in range(n_layers)])
-
-    def forward(self, input):
-        input, aspect = input[0], input[1] # [input text] and [input aspect]
-        bs, sl = input.size()
-        mask = (input == self.pad_token)
-        # get batch lengths
-        lengths = sl - mask.long().sum(1)
-        aspect_len = torch.tensor(torch.sum(aspect != self.pad_token, dim=-1), dtype=torch.float).cuda()
-        aspect = self.emb(aspect)
-        aspect_pool = torch.div(torch.sum(aspect, dim=1), aspect_len.view(aspect_len.size(0), 1))
-        aspect = torch.unsqueeze(aspect_pool, dim=1).expand(-1, max(lengths), -1)  # torch.expand: -1 means not changing the size of that dimension
-        n_empty = (lengths == 0).sum()
-        if n_empty > 0:
-            input = input[:-n_empty]
-            lengths = lengths[:-n_empty]
-            self.hidden = [(h[0][:,:input.size(0)], h[1][:,:input.size(0)]) for h in self.hidden]
-        raw_output = self.input_dp(self.emb_dp(input))
-        new_hidden,raw_outputs,outputs = [],[],[]
-        for l, (rnn,hid_dp) in enumerate(zip(self.rnns, self.hidden_dps)):
-            raw_output = pack_padded_sequence(raw_output, lengths, batch_first=True, enforce_sorted=False)
-            raw_output, new_h = rnn(raw_output, self.hidden[l])
-            raw_output = pad_packed_sequence(raw_output, batch_first=True)[0]
-            raw_outputs.append(raw_output)
-            if l != self.n_layers - 1: raw_output = hid_dp(raw_output)
-            outputs.append(raw_output)
-            new_hidden.append(new_h)
-        self.hidden = to_detach(new_hidden)
-
-        return raw_outputs, outputs, mask, aspect
-
-    def _one_hidden(self, l):
-        "Return one hidden state."
-        nh = self.n_hid if l != self.n_layers - 1 else self.emb_sz
-        return next(self.parameters()).new(1, self.bs, nh).zero_()
-
-    def reset(self):
-        "Reset the hidden states."
-        self.hidden = [(self._one_hidden(l), self._one_hidden(l)) for l in range(self.n_layers)]
-class SentenceEncoder(nn.Module):
-    def __init__(self, module, bptt, pad_idx=1):
-        super().__init__()
-        self.bptt, self.module, self.pad_idx = bptt, module, pad_idx
-    def concat(self, arrs, bs):
-        return [torch.cat([pad_tensor(l[si], bs) for l in arrs], dim=1) for si in range(len(arrs[0]))]
-    def forward(self, input):
-        bs, sl = input[:, 0,:].size()
-        self.module.bs = bs
-        self.module.reset()
-        raw_outputs, outputs, masks = [], [], []
-        for i in range(0, sl, self.bptt):
-            r, o, m, aspect = self.module([input[:, 0,:][:, i: min(i + self.bptt, sl)], input[:, 1,:]])
-            masks.append(pad_tensor(m, bs, 1))
-            raw_outputs.append(r)
-            outputs.append(o)
-        return self.concat(raw_outputs, bs), self.concat(outputs, bs), torch.cat(masks, dim=1), aspect
-
-
-
+# Edited AWD_LSTM
 class AWD_LSTM_clas(nn.Module):
     "AWD-LSTM inspired by https://arxiv.org/abs/1708.02182."
     initrange=0.1
@@ -572,49 +391,105 @@ class AttentionDecoder(nn.Module):
         out = self.dense(output)
         return out.cuda()
 
+# AWD_LSTM which can deal with different sequence length
+class AWD_LSTM_clas_1(nn.Module):
+    "AWD-LSTM inspired by https://arxiv.org/abs/1708.02182."
+    initrange=0.1
 
-_model_meta = {AWD_LSTM: {'hid_name':'emb_sz', 'url':URLs.WT103_FWD, 'url_bwd':URLs.WT103_BWD,
-                          'config_lm':awd_lstm_lm_config, 'split_lm': awd_lstm_lm_split,
-                          'config_clas':awd_lstm_clas_config, 'split_clas': awd_lstm_clas_split},
-               Transformer: {'hid_name':'d_model', 'url':URLs.OPENAI_TRANSFORMER,
-                             'config_lm':tfmer_lm_config, 'split_lm': tfmer_lm_split,
-                             'config_clas':tfmer_clas_config, 'split_clas': tfmer_clas_split},
-               TransformerXL: {'hid_name':'d_model',
-                              'config_lm':tfmerXL_lm_config, 'split_lm': tfmerXL_lm_split,
-                              'config_clas':tfmerXL_clas_config, 'split_clas': tfmerXL_clas_split}}
+    def __init__(self, vocab_sz, emb_sz, n_hid, n_layers, pad_token,qrnn=False,bidir=False,
+                 hidden_p=0.2, input_p=0.6, embed_p=0.1, weight_p=0.5):
+        super().__init__()
+        self.bs,self.emb_sz,self.n_hid,self.n_layers,self.pad_token = 1,emb_sz,n_hid,n_layers,pad_token
+        self.emb = nn.Embedding(vocab_sz, emb_sz, padding_idx=pad_token)
+        self.emb_dp = EmbeddingDropout(self.emb, embed_p)
+        self.rnns = [nn.LSTM(emb_sz if l == 0 else n_hid, (n_hid if l != n_layers - 1 else emb_sz), 1,
+                             batch_first=True) for l in range(n_layers)]
+        self.rnns = nn.ModuleList([WeightDropout(rnn, weight_p) for rnn in self.rnns])
+        self.emb.weight.data.uniform_(-self.initrange, self.initrange)
+        self.input_dp = RNNDropout(input_p)
+        self.hidden_dps = nn.ModuleList([RNNDropout(hidden_p) for l in range(n_layers)])
 
-meta = _model_meta[AWD_LSTM]
-config = meta['config_clas'].copy()
-bptt:int=70
-max_len = 70
-vocab_sz = embedding_weights.shape[0]
-drop_mult:float=1
-lin_ftrs = [50]
-ps = [0.1] * len(lin_ftrs)
-n_class = 3
-layers = [config[meta['hid_name']] * 3] + lin_ftrs + [n_class]
-ps = [config.pop('output_p')] + ps
-init = config.pop('init') if 'init' in config else None
-for k in config.keys():
-    if k.endswith('_p'): config[k] *= drop_mult
-bptt:int=70
-pad_idx = 1
+    def forward(self, input):
+        input, aspect = input[0], input[1] # [input text] and [input aspect]
+        bs, sl = input.size()
+        mask = (input == self.pad_token)
+        # get batch lengths
+        lengths = sl - mask.long().sum(1)
+        aspect_len = torch.tensor(torch.sum(aspect != self.pad_token, dim=-1), dtype=torch.float).cuda()
+        aspect = self.emb(aspect)
+        aspect_pool = torch.div(torch.sum(aspect, dim=1), aspect_len.view(aspect_len.size(0), 1))
+        aspect = torch.unsqueeze(aspect_pool, dim=1).expand(-1, max(lengths), -1)  # torch.expand: -1 means not changing the size of that dimension
+        n_empty = (lengths == 0).sum()
+        if n_empty > 0:
+            input = input[:-n_empty]
+            lengths = lengths[:-n_empty]
+            self.hidden = [(h[0][:,:input.size(0)], h[1][:,:input.size(0)]) for h in self.hidden]
+        raw_output = self.input_dp(self.emb_dp(input))
+        new_hidden,raw_outputs,outputs = [],[],[]
+        for l, (rnn,hid_dp) in enumerate(zip(self.rnns, self.hidden_dps)):
+            raw_output = pack_padded_sequence(raw_output, lengths, batch_first=True, enforce_sorted=False)
+            raw_output, new_h = rnn(raw_output, self.hidden[l])
+            raw_output = pad_packed_sequence(raw_output, batch_first=True)[0]
+            raw_outputs.append(raw_output)
+            if l != self.n_layers - 1: raw_output = hid_dp(raw_output)
+            outputs.append(raw_output)
+            new_hidden.append(new_h)
+        self.hidden = to_detach(new_hidden)
+
+        return raw_outputs, outputs, mask, aspect
+
+    def _one_hidden(self, l):
+        "Return one hidden state."
+        nh = self.n_hid if l != self.n_layers - 1 else self.emb_sz
+        return next(self.parameters()).new(1, self.bs, nh).zero_()
+
+    def reset(self):
+        "Reset the hidden states."
+        self.hidden = [(self._one_hidden(l), self._one_hidden(l)) for l in range(self.n_layers)]
+class SentenceEncoder(nn.Module):
+    def __init__(self, module, bptt, pad_idx=1):
+        super().__init__()
+        self.bptt, self.module, self.pad_idx = bptt, module, pad_idx
+    def concat(self, arrs, bs):
+        return [torch.cat([pad_tensor(l[si], bs) for l in arrs], dim=1) for si in range(len(arrs[0]))]
+    def forward(self, input):
+        bs, sl = input[:, 0,:].size()
+        self.module.bs = bs
+        self.module.reset()
+        raw_outputs, outputs, masks = [], [], []
+        for i in range(0, sl, self.bptt):
+            r, o, m, aspect = self.module([input[:, 0,:][:, i: min(i + self.bptt, sl)], input[:, 1,:]])
+            masks.append(pad_tensor(m, bs, 1))
+            raw_outputs.append(r)
+            outputs.append(o)
+        return self.concat(raw_outputs, bs), self.concat(outputs, bs), torch.cat(masks, dim=1), aspect
 
 
+# train classification model
+# (1) AWD_LSTM model
 module = AWD_LSTM_clas(vocab_sz, **config)
-encoder = MultiBatchEncoder(bptt, max_len, module, pad_idx=pad_idx)
-model = SequentialRNN(encoder, AttentionDecoder())
+model = SequentialRNN(MultiBatchEncoder(bptt, max_len, module, pad_idx=pad_idx), AttentionDecoder())
 learn = Learner(databunch, model, loss_func = F.cross_entropy, metrics=accuracy)
-learn.load_encoder('fine_tuned_enc')
+pretrained_dict = encoder[0].state_dict()
+model_dict = learn.model[0].state_dict()
+pretrained_encoder = {key: value for (key, value) in zip(model_dict.keys(), pretrained_dict.values())}
+learn.model[0].load_state_dict(pretrained_encoder)
 
-
-learn.fit_one_cycle(1, 2e-3, moms=(0.8,0.7))
+learn.fit_one_cycle(10, 2e-3, moms=(0.8,0.7))
 learn.unfreeze()
 learn.fit_one_cycle(10, 2e-3, moms=(0.8,0.7))
 
 
-encoder = SentenceEncoder(AWD_LSTM_clas_1(vocab_sz, **config),bptt)
-model = SequentialRNN(encoder, AttentionDecoder())
+# (2) AWD_LSTM model which can handle different sequence length
+model = SequentialRNN( SentenceEncoder(AWD_LSTM_clas_1(vocab_sz, **config),bptt), AttentionDecoder())
 learn = Learner(databunch, model, loss_func = F.cross_entropy, metrics=accuracy)
+pretrained_dict = encoder[0].state_dict()
+model_dict = learn.model[0].state_dict()
+pretrained_encoder = {key: value for (key, value) in zip(model_dict.keys(), pretrained_dict.values())}
+learn.model[0].load_state_dict(pretrained_encoder)
+
+learn.fit_one_cycle(10, 2e-3, moms=(0.8,0.7))
 learn.unfreeze()
 learn.fit_one_cycle(10, 2e-3, moms=(0.8,0.7))
+
+
