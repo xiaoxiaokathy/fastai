@@ -17,53 +17,52 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # AWD_LSTM improvements - can handle different sequence length
-class AWD_LSTM1(nn.Module):
-    "AWD-LSTM inspired by https://arxiv.org/abs/1708.02182."
-    initrange=0.1
-
-    def __init__(self, vocab_sz, emb_sz, n_hid, n_layers, pad_token,
-                 hidden_p=0.2, input_p=0.6, embed_p=0.1, weight_p=0.5):
-        super().__init__()
-        self.bs,self.emb_sz,self.n_hid,self.n_layers,self.pad_token = 1,emb_sz,n_hid,n_layers,pad_token
-        self.emb = nn.Embedding(vocab_sz, emb_sz, padding_idx=pad_token)
-        self.emb_dp = EmbeddingDropout(self.emb, embed_p)
-        self.rnns = [nn.LSTM(emb_sz if l == 0 else n_hid, (n_hid if l != n_layers - 1 else emb_sz), 1,
-                             batch_first=True) for l in range(n_layers)]
-        self.rnns = nn.ModuleList([WeightDropout(rnn, weight_p) for rnn in self.rnns])
-        self.emb.weight.data.uniform_(-self.initrange, self.initrange)
-        self.input_dp = RNNDropout(input_p)
-        self.hidden_dps = nn.ModuleList([RNNDropout(hidden_p) for l in range(n_layers)])
-
-    def forward(self, input):
-        bs,sl = input.size()
-        mask = (input == self.pad_token)
-        lengths = sl - mask.long().sum(1)
-        n_empty = (lengths == 0).sum()
-        if n_empty > 0:
-            input = input[:-n_empty]
-            lengths = lengths[:-n_empty]
-            self.hidden = [(h[0][:,:input.size(0)], h[1][:,:input.size(0)]) for h in self.hidden]
-        raw_output = self.input_dp(self.emb_dp(input))
-        new_hidden,raw_outputs,outputs = [],[],[]
-        for l, (rnn,hid_dp) in enumerate(zip(self.rnns, self.hidden_dps)):
-            raw_output = pack_padded_sequence(raw_output, lengths, batch_first=True)
-            raw_output, new_h = rnn(raw_output, self.hidden[l])
-            raw_output = pad_packed_sequence(raw_output, batch_first=True)[0]
-            raw_outputs.append(raw_output)
-            if l != self.n_layers - 1: raw_output = hid_dp(raw_output)
-            outputs.append(raw_output)
-            new_hidden.append(new_h)
-        self.hidden = to_detach(new_hidden)
-        return raw_outputs, outputs, mask
-
-    def _one_hidden(self, l):
-        "Return one hidden state."
-        nh = self.n_hid if l != self.n_layers - 1 else self.emb_sz
-        return next(self.parameters()).new(1, self.bs, nh).zero_()
-
-    def reset(self):
-        "Reset the hidden states."
-        self.hidden = [(self._one_hidden(l), self._one_hidden(l)) for l in range(self.n_layers)]
+# class AWD_LSTM1(nn.Module):
+#     "AWD-LSTM inspired by https://arxiv.org/abs/1708.02182."
+#     initrange=0.1
+#     def __init__(self, vocab_sz, emb_sz, n_hid, n_layers, pad_token,
+#                  hidden_p=0.2, input_p=0.6, embed_p=0.1, weight_p=0.5):
+#         super().__init__()
+#         self.bs,self.emb_sz,self.n_hid,self.n_layers,self.pad_token = 1,emb_sz,n_hid,n_layers,pad_token
+#         self.emb = nn.Embedding(vocab_sz, emb_sz, padding_idx=pad_token)
+#         self.emb_dp = EmbeddingDropout(self.emb, embed_p)
+#         self.rnns = [nn.LSTM(emb_sz if l == 0 else n_hid, (n_hid if l != n_layers - 1 else emb_sz), 1,
+#                              batch_first=True) for l in range(n_layers)]
+#         self.rnns = nn.ModuleList([WeightDropout(rnn, weight_p) for rnn in self.rnns])
+#         self.emb.weight.data.uniform_(-self.initrange, self.initrange)
+#         self.input_dp = RNNDropout(input_p)
+#         self.hidden_dps = nn.ModuleList([RNNDropout(hidden_p) for l in range(n_layers)])
+#
+#     def forward(self, input):
+#         bs,sl = input.size()
+#         mask = (input == self.pad_token)
+#         lengths = sl - mask.long().sum(1)
+#         n_empty = (lengths == 0).sum()
+#         if n_empty > 0:
+#             input = input[:-n_empty]
+#             lengths = lengths[:-n_empty]
+#             self.hidden = [(h[0][:,:input.size(0)], h[1][:,:input.size(0)]) for h in self.hidden]
+#         raw_output = self.input_dp(self.emb_dp(input))
+#         new_hidden,raw_outputs,outputs = [],[],[]
+#         for l, (rnn,hid_dp) in enumerate(zip(self.rnns, self.hidden_dps)):
+#             raw_output = pack_padded_sequence(raw_output, lengths, batch_first=True)
+#             raw_output, new_h = rnn(raw_output, self.hidden[l])
+#             raw_output = pad_packed_sequence(raw_output, batch_first=True)[0]
+#             raw_outputs.append(raw_output)
+#             if l != self.n_layers - 1: raw_output = hid_dp(raw_output)
+#             outputs.append(raw_output)
+#             new_hidden.append(new_h)
+#         self.hidden = to_detach(new_hidden)
+#         return raw_outputs, outputs, mask
+#
+#     def _one_hidden(self, l):
+#         "Return one hidden state."
+#         nh = self.n_hid if l != self.n_layers - 1 else self.emb_sz
+#         return next(self.parameters()).new(1, self.bs, nh).zero_()
+#
+#     def reset(self):
+#         "Reset the hidden states."
+#         self.hidden = [(self._one_hidden(l), self._one_hidden(l)) for l in range(self.n_layers)]
 class Attention(nn.Module):
     def __init__(self, embed_dim, hidden_dim=None, out_dim=None, n_head=1, score_function='dot_product', dropout=0):
         ''' Attention Mechanism
@@ -108,12 +107,12 @@ class Attention(nn.Module):
         mb_size = k.shape[0]  # ?
         k_len = k.shape[1]
         q_len = q.shape[1]
-        # k: (?, k_len, embed_dim,)
-        # q: (?, q_len, embed_dim,)
-        # kx: (n_head*?, k_len, hidden_dim)
-        # qx: (n_head*?, q_len, hidden_dim)
-        # score: (n_head*?, q_len, k_len,)
-        # output: (?, q_len, out_dim,)
+        # k: (bs, k_len, embed_dim,)
+        # q: (bs, q_len, embed_dim,)
+        # kx: (bs, k_len, hidden_dim)
+        # qx: (bs, q_len, hidden_dim)
+        # score: (bs, q_len, k_len,)
+        # output: (bs, q_len, out_dim,)
         kx = self.w_k(k).view(mb_size, k_len, self.n_head, self.hidden_dim)
         kx = kx.permute(2, 0, 1, 3).contiguous().view(-1, k_len, self.hidden_dim)
         qx = self.w_q(q).view(mb_size, q_len, self.n_head, self.hidden_dim)
@@ -143,6 +142,7 @@ class Attention(nn.Module):
         output = self.proj(output)  # (?, q_len, out_dim)
         output = self.dropout(output)
         return output, score
+
 class NoQueryAttention(Attention):
     '''q is a parameter'''
     def __init__(self, embed_dim, hidden_dim=None, out_dim=None, n_head=1, score_function='dot_product', q_len=1, dropout=0):
@@ -180,8 +180,8 @@ def load_text_data(file):
     df = pd.DataFrame(data = {'text': text_raw_list,'aspect': aspect_list,'target': target_list})
     df['target'] = df['target'].apply(lambda x: int(x)+1)
     return df
-train_file = r'C:\Users\xiaoxu\Documents\ABSA-PyTorch\datasets\semeval14\Laptops_Train.xml.seg'
-test_file = r'C:\Users\xiaoxu\Documents\ABSA-PyTorch\datasets\semeval14\Laptops_Test_Gold.xml.seg'
+train_file = r'C:\Users\xiaoxu\Documents\ABSA-PyTorch\datasets\acl-14-short-data\train.raw'
+test_file = r'C:\Users\xiaoxu\Documents\ABSA-PyTorch\datasets\acl-14-short-data\test.raw'
 train_df =  load_text_data(train_file)
 test_df =  load_text_data(test_file)
 df = pd.concat([train_df, test_df])
@@ -256,18 +256,10 @@ val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = bs, shuffle=T
 databunch = DataBunch(train_dl = train_loader, valid_dl = val_loader)
 
 
-
-
 _model_meta = {AWD_LSTM: {'hid_name':'emb_sz', 'url':URLs.WT103_FWD, 'url_bwd':URLs.WT103_BWD,
                           'config_lm':awd_lstm_lm_config, 'split_lm': awd_lstm_lm_split,
-                          'config_clas':awd_lstm_clas_config, 'split_clas': awd_lstm_clas_split},
-               Transformer: {'hid_name':'d_model', 'url':URLs.OPENAI_TRANSFORMER,
-                             'config_lm':tfmer_lm_config, 'split_lm': tfmer_lm_split,
-                             'config_clas':tfmer_clas_config, 'split_clas': tfmer_clas_split},
-               TransformerXL: {'hid_name':'d_model',
-                              'config_lm':tfmerXL_lm_config, 'split_lm': tfmerXL_lm_split,
-                              'config_clas':tfmerXL_clas_config, 'split_clas': tfmerXL_clas_split}}
-
+                          'config_clas':awd_lstm_clas_config, 'split_clas': awd_lstm_clas_split}
+               }
 meta = _model_meta[AWD_LSTM]
 config = meta['config_clas'].copy()
 bptt:int=70
@@ -289,6 +281,7 @@ def pad_tensor(t, bs, val=0.):
     if t.size(0) < bs:
         return torch.cat([t, val + t.new_zeros(bs-t.size(0), *t.shape[1:])])
     return t
+
 # Edited AWD_LSTM
 class AWD_LSTM_clas(nn.Module):
     "AWD-LSTM inspired by https://arxiv.org/abs/1708.02182."
@@ -376,6 +369,7 @@ class MultiBatchEncoder(Module):
             raw_outputs.append(r)
             outputs.append(o)
         return self.concat(raw_outputs),self.concat(outputs),torch.cat(masks,dim=1),aspect
+
 class AttentionDecoder(nn.Module):
     def __init__(self):
         super().__init__()
@@ -476,6 +470,7 @@ pretrained_encoder = {key: value for (key, value) in zip(model_dict.keys(), pret
 learn.model[0].load_state_dict(pretrained_encoder)
 
 learn.fit_one_cycle(10, 2e-3, moms=(0.8,0.7))
+learn,unfree
 learn.unfreeze()
 learn.fit_one_cycle(10, 2e-3, moms=(0.8,0.7))
 
@@ -488,8 +483,13 @@ model_dict = learn.model[0].state_dict()
 pretrained_encoder = {key: value for (key, value) in zip(model_dict.keys(), pretrained_dict.values())}
 learn.model[0].load_state_dict(pretrained_encoder)
 
-learn.fit_one_cycle(10, 2e-3, moms=(0.8,0.7))
+learn.fit_one_cycle(2, 2e-3, moms=(0.8,0.7))
+
+learn.freeze_to(-2)
+learn.fit_one_cycle(2, 2e-4)
+
+learn.freeze_to(-3)
+learn.fit_one_cycle(2,  2e-4)
+
 learn.unfreeze()
-learn.fit_one_cycle(10, 2e-3, moms=(0.8,0.7))
-
-
+learn.fit_one_cycle(3, 2e-4, moms=(0.8,0.7))
