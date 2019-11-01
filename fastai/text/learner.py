@@ -241,6 +241,7 @@ class PoolingLinearClassifier(Module):
         raw_outputs,outputs,mask = input
         x = masked_concat_pool(outputs, mask)
         x = self.layers(x)
+        print(x)
         return x, raw_outputs, outputs
 
 class MultiBatchEncoder(Module):
@@ -256,6 +257,7 @@ class MultiBatchEncoder(Module):
         if hasattr(self.module, 'reset'): self.module.reset()
 
     def forward(self, input:LongTensor)->Tuple[Tensor,Tensor]:
+
         bs,sl = input.size()
         self.reset()
         raw_outputs,outputs,masks = [],[],[]
@@ -301,3 +303,29 @@ def text_classifier_learner(data:DataBunch, arch:Callable, bptt:int=70, max_len:
         learn = learn.load_pretrained(*fnames, strict=False)
         learn.freeze()
     return learn
+
+
+
+
+    (encoder): Embedding(60000, 400, padding_idx=1)
+    (encoder_dp): EmbeddingDropout(
+      (emb): Embedding(60000, 400, padding_idx=1)
+    )
+    (rnns): ModuleList(
+      (0): WeightDropout(
+        (module): LSTM(400, 1152, batch_first=True)
+      )
+      (1): WeightDropout(
+        (module): LSTM(1152, 1152, batch_first=True)
+      )
+      (2): WeightDropout(
+        (module): LSTM(1152, 400, batch_first=True)
+      )
+    )
+    (input_dp): RNNDropout()
+    (hidden_dps): ModuleList(
+      (0): RNNDropout()
+      (1): RNNDropout()
+      (2): RNNDropout()
+    )
+
